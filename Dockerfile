@@ -7,6 +7,7 @@ RUN	apt update \
 	ca-certificates \
 	nano \
 	apt-utils \
+	dstat \
 	ifupdown2	
 
 #add repository
