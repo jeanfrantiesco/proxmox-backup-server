@@ -1,15 +1,60 @@
 #!/bin/bash
+set -eo pipefail
+shopt -s nullglob
 
-#fix ownership
-chown -R backup:backup /etc/proxmox-backup
-chmod -R 700 /etc/proxmox-backup
+# logging functions
+pbs_log() {
+	local type="$1"; shift
+	printf '%s [%s] [Entrypoint]: %s\n' "$(date --rfc-3339=seconds)" "$type" "$*"
+}
+pbs_note() {
+	pbs_log Note "$@"
+}
+pbs_warn() {
+	pbs_log Warn "$@" >&2
+}
+pbs_error() {
+	pbs_log ERROR "$@" >&2
+	exit 1
+}
 
-# Start the first process
-./usr/lib/x86_64-linux-gnu/proxmox-backup/proxmox-backup-api &
+# Verify that the minimally required password settings are set for new databases.
+docker_verify_minimum_env() {
+	if [ -z "$ADMIN_PASSWORD" ]; then
+		pbs_error $'Password option is not specified\n\tYou need to specify one of ADMIN_PASSWORD'
+	fi
+}
+
+# Loads various settings that are used elsewhere in the script
+docker_setup_env() {
+    declare -g USERS_ALREADY_EXISTS
+	if [ -f "/etc/proxmox-backup/user.cfg" ]; then
+		USERS_ALREADY_EXISTS='true'
+	fi
+}
+
+docker_setup_pbs() {
+    #Set pbs user
+    proxmox-backup-manager user update root@pam --enable 0
+    proxmox-backup-manager user create admin@pbs
+    proxmox-backup-manager user update admin@pbs --password $ADMIN_PASSWORD
+    proxmox-backup-manager acl update / Admin --auth-id admin@pbs
+
+    #Set pbs default store
+    proxmox-backup-manager datastore create Backup /backup
+}
+
+docker_verify_minimum_env
+
+# Start api first in background
+/usr/lib/x86_64-linux-gnu/proxmox-backup/proxmox-backup-api &
 sleep 10
 
-# Start the second process
-su backup -c "/usr/lib/x86_64-linux-gnu/proxmox-backup/proxmox-backup-proxy &
-while /bin/true; do
-  sleep 60
-  done"
+docker_setup_env
+
+# there's no user setup, so it needs to be initialized
+if [ -z "$USERS_ALREADY_EXISTS" ]; then
+    docker_setup_pbs
+fi
+
+exec gosu backup /usr/lib/x86_64-linux-gnu/proxmox-backup/proxmox-backup-proxy "$@"
